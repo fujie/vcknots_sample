@@ -193,4 +193,4 @@ npm run typecheck
 
 ## ライセンス
 
-Private
+MIT
