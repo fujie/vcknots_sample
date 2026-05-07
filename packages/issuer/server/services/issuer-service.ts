@@ -254,10 +254,15 @@ export class IssuerService {
       createdAt: new Date().toISOString(),
     });
 
+    // c_nonce を生成（OID4VCI 仕様準拠）
+    const cNonce = randomUUID();
+
     return {
       access_token: accessToken,
       token_type: 'Bearer',
       expires_in: 86400,
+      c_nonce: cNonce,
+      c_nonce_expires_in: 86400,
     };
   }
 

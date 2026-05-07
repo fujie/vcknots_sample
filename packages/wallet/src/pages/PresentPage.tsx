@@ -12,14 +12,17 @@ export function PresentPage() {
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState<'input' | 'confirm' | 'success'>('input');
 
-  function handleParse() {
+  async function handleParse() {
     try {
       setError(null);
-      const parsed = walletService.receiveAuthzRequest(uri.trim());
+      setLoading(true);
+      const parsed = await walletService.receiveAuthzRequest(uri.trim());
       setRequest(parsed);
       setStep('confirm');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to parse request');
+    } finally {
+      setLoading(false);
     }
   }
 

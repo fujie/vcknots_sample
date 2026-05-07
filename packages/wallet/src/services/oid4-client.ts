@@ -164,11 +164,10 @@ export class OID4Client {
   }
 
   /**
-   * 認可リクエスト URI を解析し、検証者 URL・レスポンス URI・ノンス・PresentationDefinition を抽出する。
-   * URI 形式: openid4vp://?client_id=<id>&response_uri=<uri>&nonce=<nonce>&presentation_definition=<JSON>
-   * または: openid4vp://?request_uri=<encoded-uri>
+   * 認可リクエスト URI を解析する。
+   * インライン形式と request_uri 形式（JAR）の両方をサポートする。
    */
-  parseAuthorizationRequest(uri: string): ParsedAuthzRequest {
+  async parseAuthorizationRequest(uri: string): Promise<ParsedAuthzRequest> {
     if (!uri || typeof uri !== 'string') {
       throw new Error('Invalid Authorization Request URI: URI is empty or not a string');
     }
@@ -184,23 +183,15 @@ export class OID4Client {
 
     const queryString = uri.slice(queryStart + 1);
     const params = new URLSearchParams(queryString);
+    const clientId = params.get('client_id') ?? '';
 
-    // request_uri 形式の場合
+    // request_uri 形式の場合 — JAR を fetch してデコードする
     const requestUri = params.get('request_uri');
     if (requestUri) {
-      // request_uri の場合は後で解決する必要があるが、
-      // ここでは基本的なパース結果を返す
-      return {
-        verifierUrl: requestUri,
-        responseUri: requestUri,
-        nonce: '',
-        presentationDefinition: { id: '', input_descriptors: [] },
-        matchingCredentials: [],
-      };
+      return await this.resolveRequestUri(requestUri, clientId);
     }
 
     // インライン形式の場合
-    const clientId = params.get('client_id');
     const responseUri = params.get('response_uri');
     const nonce = params.get('nonce');
     const presentationDefinitionParam = params.get('presentation_definition');
@@ -228,10 +219,7 @@ export class OID4Client {
       throw new Error('Invalid Authorization Request: presentation_definition is not valid JSON');
     }
 
-    // 一致する資格情報を検索
     const matchingCredentials = this.credentialStorage.findMatching(presentationDefinition);
-
-    // state パラメータを取得
     const state = params.get('state') ?? undefined;
 
     return {
@@ -245,33 +233,145 @@ export class OID4Client {
   }
 
   /**
-   * VP を生成して検証者に送信する。
+   * request_uri を fetch して JAR (JWT-Secured Authorization Request) をデコードする。
+   */
+  private async resolveRequestUri(requestUri: string, clientId: string): Promise<ParsedAuthzRequest> {
+    const response = await fetch(requestUri);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch request object: HTTP ${response.status}`);
+    }
+
+    const contentType = response.headers.get('content-type') ?? '';
+    let requestObject: Record<string, unknown>;
+
+    if (contentType.includes('application/json')) {
+      // JSON 形式のリクエストオブジェクト
+      requestObject = await response.json();
+    } else {
+      // JWT 形式のリクエストオブジェクト — ペイロードをデコード
+      const jwt = await response.text();
+      const parts = jwt.split('.');
+      if (parts.length !== 3) {
+        throw new Error('Invalid request object JWT format');
+      }
+      const payloadB64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      const padded = payloadB64 + '='.repeat((4 - payloadB64.length % 4) % 4);
+      const binary = atob(padded);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      requestObject = JSON.parse(new TextDecoder().decode(bytes));
+    }
+
+    // リクエストオブジェクトからパラメータを抽出
+    const responseUri = (requestObject.response_uri as string)
+      ?? (requestObject.redirect_uri as string)
+      ?? '';
+    const nonce = (requestObject.nonce as string) ?? '';
+    const state = (requestObject.state as string) ?? undefined;
+
+    // presentation_definition を取得
+    let presentationDefinition: PresentationDefinition;
+    if (requestObject.presentation_definition) {
+      presentationDefinition = requestObject.presentation_definition as PresentationDefinition;
+    } else if (requestObject.claims && (requestObject.claims as any).vp_token?.presentation_definition) {
+      presentationDefinition = (requestObject.claims as any).vp_token.presentation_definition;
+    } else {
+      presentationDefinition = { id: '', input_descriptors: [] };
+    }
+
+    const matchingCredentials = this.credentialStorage.findMatching(presentationDefinition);
+
+    return {
+      verifierUrl: clientId || (requestObject.client_id as string) || '',
+      responseUri,
+      nonce,
+      state,
+      presentationDefinition,
+      matchingCredentials,
+    };
+  }
+
+  /**
+   * VP を JWT-VP 形式で生成して検証者に送信する。
+   * OID4VP 仕様に準拠した jwt_vp_json フォーマット。
    */
   async submitPresentation(
     responseUri: string,
     credentials: StoredCredential[],
     did: string,
-    _keyPair: { privateKeyJwk: JsonWebKey; publicKeyJwk: JsonWebKey },
+    keyPair: { privateKeyJwk: JsonWebKey; publicKeyJwk: JsonWebKey },
     nonce: string,
     state?: string,
+    presentationDefinition?: PresentationDefinition,
+    clientId?: string,
   ): Promise<void> {
-    // 簡易的な VP Token の生成（プロトタイプ）
-    const vpToken = JSON.stringify({
-      '@context': ['https://www.w3.org/2018/credentials/v1'],
-      type: ['VerifiablePresentation'],
-      holder: did,
-      verifiableCredential: credentials.map((c) => c.rawJwt),
+    // JWT-VP ペイロードを構築
+    // OID4VP 仕様: aud には client_id を設定する
+    const vpPayload = {
+      iss: did,
+      aud: clientId || responseUri,
       nonce,
-    });
+      iat: Math.floor(Date.now() / 1000),
+      vp: {
+        '@context': ['https://www.w3.org/2018/credentials/v1'],
+        type: ['VerifiablePresentation'],
+        verifiableCredential: credentials.map((c) => c.rawJwt),
+      },
+    };
+
+    // JWT-VP ヘッダー
+    // did:key の場合、フラグメントは did:key: プレフィックスを除いた部分
+    const fragment = did.replace(/^did:key:/, '');
+    const vpHeader = {
+      alg: 'ES256',
+      typ: 'JWT',
+      kid: `${did}#${fragment}`,
+    };
+
+    // ES256 署名
+    const headerB64 = this.strToBase64url(JSON.stringify(vpHeader));
+    const payloadB64 = this.strToBase64url(JSON.stringify(vpPayload));
+    const signingInput = `${headerB64}.${payloadB64}`;
+
+    const privateKey = await crypto.subtle.importKey(
+      'jwk',
+      keyPair.privateKeyJwk,
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['sign'],
+    );
+
+    const signatureBuffer = await crypto.subtle.sign(
+      { name: 'ECDSA', hash: 'SHA-256' },
+      privateKey,
+      new TextEncoder().encode(signingInput),
+    );
+
+    const signatureB64 = this.base64urlEncode(new Uint8Array(signatureBuffer));
+    const vpToken = `${signingInput}.${signatureB64}`;
+
+    // Presentation Submission（OID4VP 仕様準拠）
+    const definitionId = presentationDefinition?.id ?? 'presentation-request';
+    const inputDescriptors = presentationDefinition?.input_descriptors ?? [];
 
     const presentationSubmission = {
       id: crypto.randomUUID(),
-      definition_id: 'presentation-request',
-      descriptor_map: credentials.map((c, index) => ({
-        id: `descriptor-${index}`,
-        format: 'jwt_vp',
-        path: `$.verifiableCredential[${index}]`,
-      })),
+      definition_id: definitionId,
+      descriptor_map: credentials.map((_c, index) => {
+        const descriptorId = inputDescriptors[index]?.id ?? `descriptor-${index}`;
+        return {
+          id: descriptorId,
+          format: 'jwt_vp_json',
+          path: '$',
+          path_nested: {
+            id: descriptorId,
+            format: 'jwt_vc_json',
+            path: `$.vp.verifiableCredential[${index}]`,
+          },
+        };
+      }),
     };
 
     const params: Record<string, string> = {
@@ -294,5 +394,17 @@ export class OID4Client {
         `Presentation submission failed: ${(errorBody as { error?: string }).error || `HTTP ${response.status}`}`,
       );
     }
+  }
+
+  private base64urlEncode(data: Uint8Array): string {
+    let binary = '';
+    for (let i = 0; i < data.length; i++) {
+      binary += String.fromCharCode(data[i]);
+    }
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  private strToBase64url(str: string): string {
+    return this.base64urlEncode(new TextEncoder().encode(str));
   }
 }

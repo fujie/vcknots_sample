@@ -68,14 +68,25 @@ export class WalletService {
   /**
    * オファーの受け入れと資格情報取得。
    * Pre-Authorized Code Flow に従ってトークン取得→資格情報取得→保存を実行する。
+   * エンドポイント URL はメタデータから取得する。
    */
   async acceptOffer(offer: ParsedCredentialOffer): Promise<StoredCredential> {
     try {
       // DID を取得または生成
       const didInfo = await this.didService.getOrCreateDID();
 
-      // トークンエンドポイントの URL を構築
-      const tokenEndpoint = `${offer.issuerUrl.replace(/\/$/, '')}/token`;
+      const metadata = offer.issuerMetadata as Record<string, unknown>;
+      const issuerBase = offer.issuerUrl.replace(/\/$/, '');
+
+      // メタデータからエンドポイントを取得（フォールバック付き）
+      const credentialEndpoint = (metadata.credential_endpoint as string)
+        ?? `${issuerBase}/credential`;
+
+      // token_endpoint は issuer メタデータまたは authorization server メタデータから取得
+      // OID4VCI では token_endpoint は authorization server metadata にあるが、
+      // 多くの実装では issuer metadata にも含まれる
+      const tokenEndpoint = (metadata.token_endpoint as string)
+        ?? `${issuerBase}/token`;
 
       // Pre-Authorized Code でトークンを取得
       const tokenResponse = await this.oid4Client.exchangePreAuthorizedCode(
@@ -83,16 +94,14 @@ export class WalletService {
         offer.preAuthorizedCode,
       );
 
-      // 資格情報エンドポイントの URL を構築
-      const credentialEndpoint = `${offer.issuerUrl.replace(/\/$/, '')}/credential`;
-
       // ES256 署名付き proof JWT を生成
+      // OID4VCI 仕様: nonce には token response の c_nonce を使用する
       const proofJwt = await createProofJwt({
         issuerUrl: offer.issuerUrl,
         holderDid: didInfo.did,
         publicKeyJwk: didInfo.publicKeyJwk,
         privateKeyJwk: didInfo.privateKeyJwk,
-        nonce: tokenResponse.access_token,
+        nonce: tokenResponse.c_nonce,
       });
 
       const proof = {
@@ -143,9 +152,9 @@ export class WalletService {
    * 認可リクエストの受信と処理。
    * 認可リクエストを解析し、一致する資格情報を検索する。
    */
-  receiveAuthzRequest(requestUri: string): ParsedAuthzRequest {
+  async receiveAuthzRequest(requestUri: string): Promise<ParsedAuthzRequest> {
     try {
-      const parsedRequest = this.oid4Client.parseAuthorizationRequest(requestUri);
+      const parsedRequest = await this.oid4Client.parseAuthorizationRequest(requestUri);
 
       // アクティビティログ記録
       this.logActivity('presentation_submitted', 'success', {
@@ -182,6 +191,8 @@ export class WalletService {
         { privateKeyJwk: didInfo.privateKeyJwk, publicKeyJwk: didInfo.publicKeyJwk },
         request.nonce,
         request.state,
+        request.presentationDefinition,
+        request.verifierUrl,
       );
 
       // アクティビティログ記録

@@ -229,7 +229,7 @@ export class VerifierService {
 
   /**
    * プレゼンテーション検証
-   * ウォレットから送信された VP Token を解析し、含まれる JWT-VC を検証する。
+   * JWT-VP 形式と JSON 形式の両方に対応する。
    */
   async verifyPresentation(
     vpToken: string,
@@ -247,31 +247,43 @@ export class VerifierService {
     });
 
     try {
-      // VP Token を解析（JSON 形式の VP）
-      let vp: { holder?: string; verifiableCredential?: string[]; nonce?: string };
-      try {
-        vp = JSON.parse(vpToken);
-      } catch {
-        throw new Error('Invalid VP Token: not valid JSON');
+      // VP Token から verifiableCredential を抽出
+      let vcJwts: string[];
+
+      const jwtParts = vpToken.split('.');
+      if (jwtParts.length === 3) {
+        // JWT-VP 形式 — ペイロードをデコードして vp.verifiableCredential を取得
+        const payloadB64 = jwtParts[1].replace(/-/g, '+').replace(/_/g, '/');
+        const padded = payloadB64 + '='.repeat((4 - payloadB64.length % 4) % 4);
+        const payloadStr = Buffer.from(padded, 'base64').toString('utf-8');
+        const vpPayload = JSON.parse(payloadStr);
+        vcJwts = vpPayload.vp?.verifiableCredential ?? [];
+      } else {
+        // JSON 形式（レガシー対応）
+        try {
+          const vp = JSON.parse(vpToken);
+          vcJwts = vp.verifiableCredential ?? [];
+        } catch {
+          throw new Error('Invalid VP Token: not a valid JWT or JSON');
+        }
       }
 
-      if (!vp.verifiableCredential || vp.verifiableCredential.length === 0) {
+      if (vcJwts.length === 0) {
         throw new Error('VP contains no verifiable credentials');
       }
 
       // 各 JWT-VC をデコードして検証
       const credentials: VerifiedCredential[] = [];
-      for (const jwtVc of vp.verifiableCredential) {
+      for (const jwtVc of vcJwts) {
         const parts = jwtVc.split('.');
         if (parts.length !== 3) {
           throw new Error('Invalid JWT-VC format');
         }
 
-        // base64url デコード
-        const payloadB64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-        const padded = payloadB64 + '='.repeat((4 - payloadB64.length % 4) % 4);
-        const payloadStr = Buffer.from(padded, 'base64').toString('utf-8');
-        const payload = JSON.parse(payloadStr);
+        const vcPayloadB64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+        const vcPadded = vcPayloadB64 + '='.repeat((4 - vcPayloadB64.length % 4) % 4);
+        const vcPayloadStr = Buffer.from(vcPadded, 'base64').toString('utf-8');
+        const payload = JSON.parse(vcPayloadStr);
 
         credentials.push({
           type: payload.vc?.type ?? ['VerifiableCredential'],
@@ -296,7 +308,6 @@ export class VerifierService {
         details: { verified: true, state, credentialCount: credentials.length },
       });
 
-      // 結果を保存（state をキーに）
       if (state) {
         this.verificationResultStore.set(state, verificationResult);
       }

@@ -35,13 +35,14 @@ export async function createProofJwt(params: {
 }): Promise<string> {
   const { issuerUrl, holderDid, privateKeyJwk, nonce } = params;
 
-  // Header - kid は "DID#DID" 形式 (verification method ID)
-  // vcknots の did:key プロバイダーは kid から DID を解決する
-  const header = {
-    alg: 'ES256',
-    typ: 'openid4vci-proof+jwt',
-    kid: `${holderDid}#${holderDid}`,
-  };
+    // Header - kid は "DID#fragment" 形式 (verification method ID)
+    // did:key の場合、フラグメントは did:key: プレフィックスを除いた部分
+    const fragment = holderDid.replace(/^did:key:/, '');
+    const header = {
+      alg: 'ES256',
+      typ: 'openid4vci-proof+jwt',
+      kid: `${holderDid}#${fragment}`,
+    };
 
   // Payload - Pre-Authorized Code Flow では iss を省略
   const payload: Record<string, unknown> = {

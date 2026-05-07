@@ -130,8 +130,10 @@ export class CredentialStorage {
   }
 
   /**
-   * 簡易的な JSONPath 解決。
-   * サポートするパス形式: $.type, $.credentialSubject.name など
+   * JSONPath 解決。
+   * JWT-VC ペイロード全体をルートとするパス（$.vc.type 等）と
+   * デコード済み credential をルートとするパス（$.type 等）の両方に対応する。
+   * SD-JWT-VC の $.vct にも対応する。
    */
   private resolveJsonPath(credential: StoredCredential, path: string): unknown {
     if (!path.startsWith('$.')) {
@@ -139,16 +141,54 @@ export class CredentialStorage {
     }
 
     const parts = path.slice(2).split('.');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let current: any = credential.decoded;
 
-    for (const part of parts) {
-      if (current === null || current === undefined) {
-        return undefined;
+    // $.vc.* パス — JWT-VC ペイロードの vc オブジェクトを参照
+    // credential.decoded は vc の中身を展開した構造なので、vc. プレフィックスをスキップ
+    if (parts[0] === 'vc') {
+      const vcParts = parts.slice(1);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let current: any = credential.decoded;
+      for (const part of vcParts) {
+        if (current === null || current === undefined) return undefined;
+        current = current[part];
       }
-      current = current[part];
+      if (current !== undefined) return current;
     }
 
-    return current;
+    // $.vct — SD-JWT-VC 形式: credential type の最後の要素を返す
+    if (parts.length === 1 && parts[0] === 'vct') {
+      const types = credential.decoded.type;
+      return types[types.length - 1];
+    }
+
+    // $.type, $.credentialSubject.* 等 — decoded をルートとして解決
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let current: any = credential.decoded;
+    for (const part of parts) {
+      if (current === null || current === undefined) return undefined;
+      current = current[part];
+    }
+    if (current !== undefined) return current;
+
+    // フォールバック: rawJwt のペイロード全体から解決を試みる
+    try {
+      const payloadB64 = credential.rawJwt.split('.')[1];
+      const b64 = payloadB64.replace(/-/g, '+').replace(/_/g, '/');
+      const padded = b64 + '='.repeat((4 - b64.length % 4) % 4);
+      const binary = atob(padded);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const fullPayload = JSON.parse(new TextDecoder().decode(bytes));
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let raw: any = fullPayload;
+      for (const part of parts) {
+        if (raw === null || raw === undefined) return undefined;
+        raw = raw[part];
+      }
+      return raw;
+    } catch {
+      return undefined;
+    }
   }
 }

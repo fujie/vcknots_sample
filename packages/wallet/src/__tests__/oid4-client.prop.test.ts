@@ -155,14 +155,14 @@ describe('OID4Client - Property 10: 認可リクエスト URI の解析正当性
 
   it('有効な認可リクエスト URI を正しく解析する', () => {
     fc.assert(
-      fc.property(
+      fc.asyncProperty(
         fc.record({
           clientId: fc.stringMatching(/^https:\/\/[a-z]{3,10}\.[a-z]{2,5}$/),
           responseUri: fc.stringMatching(/^https:\/\/[a-z]{3,10}\.[a-z]{2,5}\/response$/),
           nonce: fc.stringMatching(/^[a-zA-Z0-9]{10,30}$/),
           descriptorId: fc.stringMatching(/^[a-z]{3,10}$/),
         }),
-        ({ clientId, responseUri, nonce, descriptorId }) => {
+        async ({ clientId, responseUri, nonce, descriptorId }) => {
           const presentationDefinition = {
             id: 'test-pd',
             input_descriptors: [
@@ -185,7 +185,7 @@ describe('OID4Client - Property 10: 認可リクエスト URI の解析正当性
 
           const uri = `openid4vp://?client_id=${encodeURIComponent(clientId)}&response_uri=${encodeURIComponent(responseUri)}&nonce=${encodeURIComponent(nonce)}&presentation_definition=${encodeURIComponent(JSON.stringify(presentationDefinition))}`;
 
-          const result = client.parseAuthorizationRequest(uri);
+          const result = await client.parseAuthorizationRequest(uri);
 
           expect(result.verifierUrl).toBe(clientId);
           expect(result.responseUri).toBe(responseUri);
@@ -199,12 +199,12 @@ describe('OID4Client - Property 10: 認可リクエスト URI の解析正当性
 
   it('不正なスキームの URI はエラーを返す', () => {
     fc.assert(
-      fc.property(
+      fc.asyncProperty(
         fc.stringMatching(/^[a-z]{3,10}:\/\/[a-z]{3,10}$/).filter(
           (s) => !s.startsWith('openid4vp://'),
         ),
-        (invalidUri) => {
-          expect(() => client.parseAuthorizationRequest(invalidUri)).toThrow();
+        async (invalidUri) => {
+          await expect(client.parseAuthorizationRequest(invalidUri)).rejects.toThrow();
         },
       ),
       { numRuns: 100 },
@@ -213,7 +213,7 @@ describe('OID4Client - Property 10: 認可リクエスト URI の解析正当性
 
   it('必須パラメータが欠落した URI はエラーを返す', () => {
     fc.assert(
-      fc.property(
+      fc.asyncProperty(
         fc.constantFrom(
           // client_id が欠落
           'openid4vp://?response_uri=https://v.com/r&nonce=abc&presentation_definition={}',
@@ -224,8 +224,8 @@ describe('OID4Client - Property 10: 認可リクエスト URI の解析正当性
           // presentation_definition が欠落
           'openid4vp://?client_id=https://v.com&response_uri=https://v.com/r&nonce=abc',
         ),
-        (invalidUri) => {
-          expect(() => client.parseAuthorizationRequest(invalidUri)).toThrow();
+        async (invalidUri) => {
+          await expect(client.parseAuthorizationRequest(invalidUri)).rejects.toThrow();
         },
       ),
       { numRuns: 50 },
