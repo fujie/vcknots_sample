@@ -1,0 +1,28 @@
+[
+  {
+    "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "name": "UniversityDegree",
+    "version": "1.0",
+    "attributes": [
+      { "name": "degree", "type": "string", "required": true, "description": "学位名" },
+      { "name": "university", "type": "string", "required": true, "description": "大学名" },
+      { "name": "gpa", "type": "number", "required": false, "description": "GPA" },
+      { "name": "graduationDate", "type": "date", "required": false, "description": "卒業日" }
+    ],
+    "createdAt": "2024-01-01T00:00:00.000Z",
+    "updatedAt": "2024-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+    "name": "DriverLicense",
+    "version": "1.0",
+    "attributes": [
+      { "name": "licenseNumber", "type": "string", "required": true, "description": "免許証番号" },
+      { "name": "category", "type": "string", "required": true, "description": "免許種別" },
+      { "name": "expiryDate", "type": "date", "required": true, "description": "有効期限" },
+      { "name": "isCommercial", "type": "boolean", "required": false, "description": "商用免許" }
+    ],
+    "createdAt": "2024-01-01T00:00:00.000Z",
+    "updatedAt": "2024-01-01T00:00:00.000Z"
+  }
+]
